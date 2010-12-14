@@ -26,7 +26,8 @@ handle_changes(#changes_args{style=Style}=Args1, Req, Db) ->
         Args#changes_args.since
     end,
     if Args#changes_args.feed == "continuous" orelse
-        Args#changes_args.feed == "longpoll" ->
+       Args#changes_args.feed == "longpoll" orelse
+       Args#changes_args.feed == "eventsource" ->
         fun(Callback) ->
             Self = self(),
             {ok, Notify} = couch_db_update_notifier:start_link(
@@ -137,6 +138,8 @@ get_changes_timeout(Args, Callback) ->
             fun() -> Callback(timeout, ResponseType), ok end}
     end.
 
+start_sending_changes(_Callback, "eventsource") ->
+    ok;
 start_sending_changes(_Callback, "continuous") ->
     ok;
 start_sending_changes(Callback, ResponseType) ->
@@ -202,6 +205,27 @@ keep_sending_changes(Args, Callback, Db, StartSeq, Prepend, Timeout,
 end_sending_changes(Callback, EndSeq, ResponseType) ->
     Callback({stop, EndSeq}, ResponseType).
 
+% Fix this stupid copy-paste later    
+changes_enumerator(DocInfo, {Db, _, _, FilterFun, Callback, "eventsource",
+    Limit, IncludeDocs}) ->
+
+    #doc_info{id=Id, high_seq=Seq,
+            revs=[#rev_info{deleted=Del,rev=Rev}|_]} = DocInfo,
+    Results0 = FilterFun(DocInfo),
+    Results = [Result || Result <- Results0, Result /= null],
+    Go = if Limit =< 1 -> stop; true -> ok end,
+    case Results of
+    [] ->
+        {Go, {Db, Seq, nil, FilterFun, Callback, "eventsource", Limit,
+                IncludeDocs}
+        };
+    _ ->
+        ChangesRow = changes_row(Db, Seq, Id, Del, Results, Rev, IncludeDocs),
+        Callback({change, ChangesRow, <<"">>}, "eventsource"),
+        {Go, {Db, Seq, nil, FilterFun, Callback, "eventsource",  Limit - 1,
+                IncludeDocs}
+        }
+    end;
 changes_enumerator(DocInfo, {Db, _, _, FilterFun, Callback, "continuous",
     Limit, IncludeDocs}) ->
 
