@@ -21,7 +21,8 @@
 -import(couch_httpd,
     [send_json/2,send_json/3,send_json/4,send_method_not_allowed/2,
     send_response/4,start_json_response/2,start_json_response/3,
-    send_chunk/2,last_chunk/1,end_json_response/1,
+    start_eventstream_response/2,start_eventstream_response/3,
+    send_chunk/2,last_chunk/1,end_json_response/1,end_eventstream_response/1,
     start_chunked_response/3, absolute_uri/2, send/2,
     start_response_length/4]).
 
@@ -67,12 +68,20 @@ handle_changes_req1(Req, Db) ->
     MakeCallback = fun(Resp) ->
         fun({change, Change, _}, "continuous") ->
             send_chunk(Resp, [?JSON_ENCODE(Change) | "\n"]);
+        ({change, {ChangeProp}=Change, _}, "eventsource") ->
+            Seq = proplists:get_value(<<"seq">>, ChangeProp),
+            send_chunk(Resp, "data: " ++ ?JSON_ENCODE(Change) ++ "\n" ++
+                             "id: " ++ ?JSON_ENCODE(Seq) ++ "\n\n");    
         ({change, Change, Prepend}, _) ->
             send_chunk(Resp, [Prepend, ?JSON_ENCODE(Change)]);
+        (start, "eventsource") ->
+            ok;    
         (start, "continuous") ->
             ok;
         (start, _) ->
             send_chunk(Resp, "{\"results\":[\n");
+        ({stop, _}, "eventsource") ->
+            end_eventstream_response(Resp);
         ({stop, EndSeq}, "continuous") ->
             send_chunk(
                 Resp,
@@ -90,11 +99,17 @@ handle_changes_req1(Req, Db) ->
         end
     end,
     ChangesArgs = parse_changes_query(Req),
-    ChangesFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
+    ChangesArgs1 = case ChangesArgs#changes_args.feed of
+        "eventsource" ->
+            ChangesArgs#changes_args{since=list_to_integer(couch_httpd:header_value(Req, "Last-Event-ID", integer_to_list(ChangesArgs#changes_args.since)))};
+        _ ->
+            ChangesArgs
+    end,
+    ChangesFun = couch_changes:handle_changes(ChangesArgs1, Req, Db),
     WrapperFun = case ChangesArgs#changes_args.feed of
     "normal" ->
         {ok, Info} = couch_db:get_db_info(Db),
-        CurrentEtag = couch_httpd:make_etag(Info),
+        CurrentEtag = couch_httpd:make_etag(Info),  
         fun(FeedChangesFun) ->
             couch_httpd:etag_respond(
                 Req,
@@ -106,6 +121,11 @@ handle_changes_req1(Req, Db) ->
                     FeedChangesFun(MakeCallback(Resp))
                 end
             )
+        end;
+    "eventsource" ->
+        {ok, Resp} = couch_httpd:start_eventstream_response(Req, 200),
+        fun(FeedChangesFun) ->
+            FeedChangesFun(MakeCallback(Resp))
         end;
     _ ->
         % "longpoll" or "continuous"

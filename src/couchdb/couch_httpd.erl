@@ -24,6 +24,7 @@
 -export([primary_header_value/2,partition/1,serve_file/3,serve_file/4, server_header/0]).
 -export([start_chunked_response/3,send_chunk/2,log_request/2]).
 -export([start_response_length/4, start_response/3, send/2]).
+-export([start_eventstream_response/2, start_eventstream_response/3, end_eventstream_response/1]).
 -export([start_json_response/2, start_json_response/3, end_json_response/1]).
 -export([send_response/4,send_method_not_allowed/2,send_error/4, send_redirect/2,send_chunked_error/2]).
 -export([send_json/2,send_json/3,send_json/4,last_chunk/1,parse_multipart_request/3]).
@@ -619,6 +620,17 @@ send_json(Req, Code, Headers, Value) ->
     ),
     send_response(Req, Code, DefaultHeaders ++ Headers, Body).
 
+start_eventstream_response(Req, Code) ->
+    start_eventstream_response(Req, Code, []).
+
+start_eventstream_response(Req, Code, Headers) ->
+    DefaultHeaders = [
+        {"Content-Type", "text/event-stream"},
+        {"Cache-Control", "no-cache"}
+    ],
+    %start_chunked_response(Req, Code, DefaultHeaders ++ Headers).
+    start_chunked_response(Req, Code, DefaultHeaders ++ Headers).    
+
 start_json_response(Req, Code) ->
     start_json_response(Req, Code, []).
 
@@ -636,6 +648,10 @@ start_json_response(Req, Code, Headers) ->
     end,
     {ok, Resp}.
 
+end_eventstream_response(Resp) ->
+    send_chunk(Resp, [$\n]),
+    last_chunk(Resp).
+    
 end_json_response(Resp) ->
     send_chunk(Resp, end_jsonp() ++ [$\n]),
     last_chunk(Resp).

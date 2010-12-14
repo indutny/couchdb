@@ -26,7 +26,9 @@ handle_changes(#changes_args{style=Style}=Args1, Req, Db) ->
     fwd ->
         Args#changes_args.since
     end,
-    if Feed == "continuous" orelse Feed == "longpoll" ->
+
+    if Feed == "continuous" orelse Feed == "longpoll" orelse
+       Feed == "eventsource" ->
         fun(CallbackAcc) ->
             {Callback, UserAcc} = get_callback_acc(CallbackAcc),
             Self = self(),
@@ -190,6 +192,8 @@ get_changes_timeout(Args, Callback) ->
             fun(UserAcc) -> {ok, Callback(timeout, ResponseType, UserAcc)} end}
     end.
 
+start_sending_changes(_Callback, UserAcc, "eventsource") ->
+    UserAcc;
 start_sending_changes(_Callback, UserAcc, "continuous") ->
     UserAcc;
 start_sending_changes(Callback, UserAcc, ResponseType) ->
@@ -258,6 +262,26 @@ keep_sending_changes(Args, Callback, UserAcc, Db, StartSeq, Prepend, Timeout,
 end_sending_changes(Callback, UserAcc, EndSeq, ResponseType) ->
     Callback({stop, EndSeq}, ResponseType, UserAcc).
 
+changes_enumerator(DocInfo, {Db, _, _, FilterFun, Callback, UserAcc,
+    "eventsource", Limit, IncludeDocs}) ->
+
+    #doc_info{id=Id, high_seq=Seq,
+            revs=[#rev_info{deleted=Del,rev=Rev}|_]} = DocInfo,
+    Results0 = FilterFun(DocInfo),
+    Results = [Result || Result <- Results0, Result /= null],
+    Go = if Limit =< 1 -> stop; true -> ok end,
+    case Results of
+    [] ->
+        {Go, {Db, Seq, nil, FilterFun, Callback, UserAcc, "eventsource", Limit,
+                IncludeDocs}
+        };
+    _ ->
+        ChangesRow = changes_row(Db, Seq, Id, Del, Results, Rev, IncludeDocs),
+        UserAcc2 = Callback({change, ChangesRow, <<>>}, "eventsource", UserAcc),
+        {Go, {Db, Seq, nil, FilterFun, Callback, UserAcc2, "eventsource",
+                Limit - 1, IncludeDocs}
+        }
+    end;    
 changes_enumerator(DocInfo, {Db, _, _, FilterFun, Callback, UserAcc,
     "continuous", Limit, IncludeDocs}) ->
 
