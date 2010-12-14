@@ -60,8 +60,10 @@ handle_changes_req(#httpd{method='GET'}=Req, Db) ->
     MakeCallback = fun(Resp) ->
         fun({change, Change, _}, "continuous") ->
             send_chunk(Resp, [?JSON_ENCODE(Change) | "\n"]);
-        ({change, Change, _}, "eventsource") ->
-            send_chunk(Resp, "data: " ++ ?JSON_ENCODE(Change) ++ "\n\n");    
+        ({change, {ChangeProp}=Change, _}, "eventsource") ->
+            Seq = proplists:get_value(<<"seq">>, ChangeProp),
+            send_chunk(Resp, "data: " ++ ?JSON_ENCODE(Change) ++ "\n" ++
+                             "id: " ++ ?JSON_ENCODE(Seq) ++ "\n\n");    
         ({change, Change, Prepend}, _) ->
             send_chunk(Resp, [Prepend, ?JSON_ENCODE(Change)]);
         (start, "eventsource") ->
@@ -89,11 +91,17 @@ handle_changes_req(#httpd{method='GET'}=Req, Db) ->
         end
     end,
     ChangesArgs = parse_changes_query(Req),
-    ChangesFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
+    ChangesArgs1 = case ChangesArgs#changes_args.feed of
+        "eventsource" ->
+            ChangesArgs#changes_args{since=list_to_integer(couch_httpd:header_value(Req, "Last-Event-ID", "0"))};
+        _ ->
+            ChangesArgs
+    end,
+    ChangesFun = couch_changes:handle_changes(ChangesArgs1, Req, Db),
     WrapperFun = case ChangesArgs#changes_args.feed of
     "normal" ->
         {ok, Info} = couch_db:get_db_info(Db),
-        CurrentEtag = couch_httpd:make_etag(Info),
+        CurrentEtag = couch_httpd:make_etag(Info),  
         fun(FeedChangesFun) ->
             couch_httpd:etag_respond(
                 Req,
