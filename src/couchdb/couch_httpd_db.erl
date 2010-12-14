@@ -93,7 +93,7 @@ handle_changes_req(#httpd{method='GET'}=Req, Db) ->
     ChangesArgs = parse_changes_query(Req),
     ChangesArgs1 = case ChangesArgs#changes_args.feed of
         "eventsource" ->
-            ChangesArgs#changes_args{since=list_to_integer(couch_httpd:header_value(Req, "Last-Event-ID", "0"))};
+            ChangesArgs#changes_args{since=list_to_integer(couch_httpd:header_value(Req, "Last-Event-ID", integer_to_list(ChangesArgs#changes_args.since)))};
         _ ->
             ChangesArgs
     end,
