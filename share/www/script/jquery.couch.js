@@ -13,6 +13,31 @@
 (function($) {
   $.couch = $.couch || {};
 
+  // Ajax wrapper for continuous changes
+  // (since jquery doesn't support them)
+  var _ajax = $.ajax;
+  $.ajax = function(options) {
+    var xhr = _ajax.call(this, options);
+
+    if (!options.chunked || !options.progress) return xhr;
+
+    var _onreadystatechange = xhr.onreadystatechange,
+        onprogress = options.progress,
+        lastPos = 0;
+
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 3) {
+        onprogress(xhr.responseText.substr(lastPos));
+
+        lastPos = xhr.responseText.length;
+      }
+
+      return _onreadystatechange.apply(this, arguments);
+    }
+
+    return xhr;
+  }
+
   function encodeDocId(docID) {
     var parts = docID.split("/");
     if (parts[0] == "_design") {
@@ -22,7 +47,7 @@
     return encodeURIComponent(docID);
   };
 
-  function prepareUserDoc(user_doc, new_password) {    
+  function prepareUserDoc(user_doc, new_password) {
     if (typeof hex_sha1 == "undefined") {
       alert("creating a user doc requires sha1.js to be loaded in the page");
       return;
@@ -70,7 +95,7 @@
         }
       }
       if (value === null) {
-        req.type = "DELETE";        
+        req.type = "DELETE";
       } else if (value !== undefined) {
         req.type = "PUT";
         req.data = toJSON(value);
@@ -82,7 +107,7 @@
         "An error occurred retrieving/updating the server configuration"
       );
     },
-    
+
     session: function(options) {
       options = options || {};
       $.ajax({
@@ -109,7 +134,7 @@
       });
     },
 
-    signup: function(user_doc, password, options) {      
+    signup: function(user_doc, password, options) {
       options = options || {};
       // prepare user doc based on name and password
       user_doc = prepareUserDoc(user_doc, password);
@@ -117,7 +142,7 @@
         db.saveDoc(user_doc, options);
       });
     },
-    
+
     login: function(options) {
       options = options || {};
       $.ajax({
@@ -235,22 +260,66 @@
           // set up the promise object within a closure for this handler
           var timeout = 100, db = this, active = true,
             listeners = [],
+            buffer = '',
+            xhr = null,
             promise = {
-            onChange : function(fun) {
-              listeners.push(fun);
-            },
-            stop : function() {
-              active = false;
-            }
-          };
+              onChange : function(fun) {
+                listeners.push(fun);
+              },
+              stop : function() {
+                active = false;
+
+                if (xhr) {
+                  xhr.abort();
+                }
+              }
+            };
+
+          options.continuous = $.browser.webkit;
+
           // call each listener when there is a change
           function triggerListeners(resp) {
             $.each(listeners, function() {
               this(resp);
             });
           };
+
+          function onprogress(resp) {
+            buffer += resp;
+            var lines = buffer.split(/\n/g);
+
+            if (lines.length > 1) {
+              buffer = lines.pop();
+              lines.forEach(online);
+            }
+          }
+
+          function online(line) {
+            try {
+              line = $.parseJSON(line);
+            } catch(e) {
+              $.log('Can\'t parse server\'s response: ' + e.toString());
+              return;
+            }
+            if (!line) return;
+
+            since = line.seq;
+
+            // Emulate usual result
+            triggerListeners({
+              results: [line],
+              last_seq: since
+            });
+          }
+
           // when there is a change, call any listeners, then check for another change
-          options.success = function(resp) {
+          // (only if not continuous mode)
+          options.success = options.continuous ? function(resp) {
+            timeout = 100;
+            if (active) {
+              getChangesSince();
+            };
+          } : function(resp) {
             timeout = 100;
             if (active) {
               since = resp.last_seq;
@@ -258,6 +327,7 @@
               getChangesSince();
             };
           };
+
           options.error = function() {
             if (active) {
               setTimeout(getChangesSince, timeout);
@@ -267,13 +337,14 @@
           // actually make the changes request
           function getChangesSince() {
             var opts = $.extend({heartbeat : 10 * 1000}, options, {
-              feed : "longpoll",
+              feed : options.continuous ? "continuous" : "longpoll",
               since : since
             });
-            ajax(
+            xhr = ajax(
               {url: db.uri + "_changes"+encodeOptions(opts)},
               options,
-              "Error connecting to "+db.uri+"/_changes."
+              "Error connecting to "+db.uri+"/_changes.",
+              options.continuous && {chunked: true, progress: onprogress}
             );
           }
           // start the first request
@@ -539,7 +610,7 @@
 
         setDbProperty: function(propName, propValue, options, ajaxOptions) {
           ajax({
-            type: "PUT", 
+            type: "PUT",
             url: this.uri + propName + encodeOptions(options),
             data : JSON.stringify(propValue)
           },
@@ -551,7 +622,7 @@
       };
     },
 
-    encodeDocId: encodeDocId, 
+    encodeDocId: encodeDocId,
 
     info: function(options) {
       ajax(
@@ -597,7 +668,7 @@
     options = $.extend({successStatus: 200}, options);
     ajaxOptions = $.extend({contentType: "application/json"}, ajaxOptions);
     errorMessage = errorMessage || "Unknown error";
-    $.ajax($.extend($.extend({
+    return $.ajax($.extend($.extend({
       type: "GET", dataType: "json", cache : !$.browser.msie,
       beforeSend: function(xhr){
         if(ajaxOptions && ajaxOptions.headers){
