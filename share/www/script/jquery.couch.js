@@ -12,7 +12,31 @@
 
 (function($) {
   $.couch = $.couch || {};
+  
+  // Ajax wrapper for continuous changes
+  // (since jquery doesn't support them)
+  function chunkedAjax(options) {
+    var xhr = $.ajax(options);
 
+    if (!options.chunked || !options.progress) return xhr;
+
+    var _onreadystatechange = xhr.onreadystatechange,
+        onprogress = options.progress,
+        lastPos = 0;
+
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 3) {
+        onprogress(xhr.responseText.substr(lastPos));
+
+        lastPos = xhr.responseText.length;
+      }
+
+      return _onreadystatechange.apply(this, arguments);
+    }
+
+    return xhr;
+  }
+  
   function encodeDocId(docID) {
     var parts = docID.split("/");
     if (parts[0] == "_design") {
@@ -235,22 +259,71 @@
           // set up the promise object within a closure for this handler
           var timeout = 100, db = this, active = true,
             listeners = [],
+            buffer = '',
+            xhr = null,
             promise = {
-            onChange : function(fun) {
-              listeners.push(fun);
-            },
-            stop : function() {
-              active = false;
-            }
-          };
+              onChange : function(fun) {
+                listeners.push(fun);
+              },
+              stop : function() {
+                active = false;
+                
+                if (xhr) {
+                  try {
+                    xhr.abort();
+                  } catch (e) {
+                  }
+                }
+              }
+            };
+          
+          // At the moment only webkit browsers support continuous feed listening
+          options.continuous = $.browser.webkit;
+          
           // call each listener when there is a change
           function triggerListeners(resp) {
             $.each(listeners, function() {
               this(resp);
             });
           };
+          
+          
+          function onprogress(resp) {
+            buffer += resp;
+            var lines = buffer.split(/\n/g);
+
+            if (lines.length > 1) {
+              buffer = lines.pop();
+              lines.forEach(online);
+            }
+          };
+
+          function online(line) {
+            try {
+              line = $.parseJSON(line);
+            } catch(e) {
+              $.log('Can\'t parse server\'s response: ' + e.toString());
+              return;
+            }
+            if (!line) return;
+
+            since = line.seq;
+
+            // Emulate usual result
+            triggerListeners({
+              results: [line],
+              last_seq: since
+            });
+          };
+
           // when there is a change, call any listeners, then check for another change
-          options.success = function(resp) {
+          // (only if we are not in continuous mode)
+          options.success = options.continuous ? function(resp) {
+            timeout = 100;
+            if (active) {
+              getChangesSince();
+            };
+          } : function(resp) {
             timeout = 100;
             if (active) {
               since = resp.last_seq;
@@ -267,13 +340,14 @@
           // actually make the changes request
           function getChangesSince() {
             var opts = $.extend({heartbeat : 10 * 1000}, options, {
-              feed : "longpoll",
+              feed : options.continuous ? "continuous" : "longpoll",
               since : since
             });
-            ajax(
+            xhr = ajax(
               {url: db.uri + "_changes"+encodeOptions(opts)},
               options,
-              "Error connecting to "+db.uri+"/_changes."
+              "Error connecting to "+db.uri+"/_changes.",
+              options.continuous && {chunked: true, progress: onprogress}
             );
           }
           // start the first request
@@ -597,7 +671,7 @@
     options = $.extend({successStatus: 200}, options);
     ajaxOptions = $.extend({contentType: "application/json"}, ajaxOptions);
     errorMessage = errorMessage || "Unknown error";
-    $.ajax($.extend($.extend({
+    return chunkedAjax($.extend($.extend({
       type: "GET", dataType: "json", cache : !$.browser.msie,
       beforeSend: function(xhr){
         if(ajaxOptions && ajaxOptions.headers){
