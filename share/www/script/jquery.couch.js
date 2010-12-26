@@ -15,9 +15,8 @@
 
   // Ajax wrapper for continuous changes
   // (since jquery doesn't support them)
-  var _ajax = $.ajax;
-  $.ajax = function(options) {
-    var xhr = _ajax.call(this, options);
+  function chunkedAjax(options) {
+    var xhr = $.ajax(options);
 
     if (!options.chunked || !options.progress) return xhr;
 
@@ -668,7 +667,7 @@
     options = $.extend({successStatus: 200}, options);
     ajaxOptions = $.extend({contentType: "application/json"}, ajaxOptions);
     errorMessage = errorMessage || "Unknown error";
-    return $.ajax($.extend($.extend({
+    return chunkedAjax($.extend($.extend({
       type: "GET", dataType: "json", cache : !$.browser.msie,
       beforeSend: function(xhr){
         if(ajaxOptions && ajaxOptions.headers){
