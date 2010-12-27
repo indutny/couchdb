@@ -29,6 +29,15 @@
         onprogress(xhr.responseText.substr(lastPos));
 
         lastPos = xhr.responseText.length;
+
+        // Prevent memory leaks (b/c xhr buffer is not cleaning)
+        if (xhr.responseText.length > (options.bufferLimit || 64000)) {
+          try {
+            xhr.abort();
+          } catch (e) {
+          }
+          options.success({});
+        }
       }
 
       return _onreadystatechange.apply(this, arguments);
